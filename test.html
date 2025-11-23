@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viber Unified Inbox | MVP Automation Platform</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Use Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #593196; /* Viber Purple */
+            --secondary-color: #3b82f6;
+            --background-color: #f4f6f9;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--background-color);
+        }
+        .viber-purple {
+            background-color: var(--primary-color);
+        }
+        .viber-text-purple {
+            color: var(--primary-color);
+        }
+        .viber-border-purple {
+            border-color: var(--primary-color);
+        }
+        /* Custom scrollbar for message list and thread */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #d1d5db;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="flex h-screen overflow-hidden">
+
+    <!-- Firebase SDK Imports (MUST be type="module") -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, collection, query, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase instances
+        let app, db, auth, userId;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // Current active view in the middle panel: 'contacts' (Unified Inbox) or 'resources' (Customer Profiles)
+        let currentView = 'contacts'; 
+
+        // Set up Firebase and Auth
+        const setupFirebase = async () => {
+            try {
+                // Initialize Firebase App
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                app = initializeApp(firebaseConfig);
+                
+                // Initialize Auth and Firestore
+                auth = getAuth(app);
+                db = getFirestore(app);
+                setLogLevel('debug'); // Enable debug logging for Firestore
+
+                // Authentication
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // Wait for auth state to stabilize
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-id-display').textContent = userId;
+                        console.log("Firebase setup complete. User ID:", userId);
+                        
+                        // Proceed to render/fetch data after successful auth
+                        initAppUI();
+                        
+                    } else {
+                        console.error("Authentication failed.");
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error setting up Firebase:", error);
+                document.getElementById('unified-inbox').innerHTML = `
+                    <div class="p-8 text-center text-red-600">
+                        Failed to initialize the platform. Check console for Firebase errors.
+                    </div>
+                `;
+            }
+        };
+
+        // --- Mock Data ---
+        const MOCK_ACCOUNTS = [
+            { id: 'viber-1', name: 'Sales Account (Boston)', status: 'Active', unread: 12 },
+            { id: 'viber-2', name: 'Support Line (NYC)', status: 'Active', unread: 5 },
+            { id: 'viber-3', name: 'Marketing Alerts', status: 'Inactive', unread: 0 },
+        ];
+        
+        // MOCK_CONTACTS represents messages in the Unified Inbox
+        const MOCK_CONTACTS = [
+            { id: 101, sender: 'Alice Johnson', time: '10:30 AM', preview: 'Hi, I need help with my order #911.', status: 'New', accountId: 'viber-1', thread: [
+                { type: 'in', text: 'Hi, I need help with my order #911. Can you check the status?', time: '10:30 AM' },
+                { type: 'out', text: 'Hello Alice, I can certainly help. What is the order number again?', time: '10:35 AM' }
+            ] },
+            { id: 102, sender: 'Bob Smith', time: '9:15 AM', preview: 'Can I upload a new file for the project?', status: 'Replied', accountId: 'viber-2', thread: [
+                { type: 'in', text: 'Good morning. I was wondering if I could upload a new file for the project?', time: '9:15 AM' }
+            ] },
+            { id: 103, sender: 'Carlos Rodriguez', time: '8:00 AM', preview: 'Requesting a status update for my refund.', status: 'New', accountId: 'viber-1', thread: [
+                { type: 'in', text: 'Requesting a status update for my refund. Case #R456.', time: '8:00 AM' }
+            ] },
+        ];
+
+        // MOCK_RESOURCES represents the profiles/data that can be uploaded/managed
+        const MOCK_RESOURCES = [
+            { id: 201, name: 'Olivia', phone: '9756832245', status: 'Online', tag: 'Normal', groupCount: 8, profileImage: 'https://placehold.co/40x40/593196/ffffff?text=O' },
+            { id: 202, name: 'Lina', phone: '9164725448', status: 'Online', tag: 'Normal', groupCount: 5, profileImage: 'https://placehold.co/40x40/3b82f6/ffffff?text=L' },
+            { id: 203, name: 'Maria', phone: '9164721650', status: 'Online', tag: 'Normal', groupCount: 5, profileImage: 'https://placehold.co/40x40/593196/ffffff?text=M' },
+            { id: 204, name: 'Ariadni', phone: '2526905645', status: 'Online', tag: 'Normal', groupCount: 38, profileImage: 'https://placehold.co/40x40/059669/ffffff?text=A' },
+            { id: 205, name: 'Chloe', phone: '9466727351', status: 'Online', tag: 'Normal', groupCount: 38, profileImage: 'https://placehold.co/40x40/f97316/ffffff?text=C' },
+            { id: 206, name: 'Zoe', phone: '9164721976', status: 'Online', tag: 'Normal', groupCount: 39, profileImage: 'https://placehold.co/40x40/10b981/ffffff?text=Z' },
+        ];
+        
+        let currentContactList = MOCK_CONTACTS;
+        let selectedMessage = null;
+
+        // --- UI Logic ---
+        
+        const initAppUI = () => {
+            renderAccounts();
+            // Start with the 'contacts' view (Unified Inbox)
+            renderListContent(currentView);
+            // Attach event listeners for the sidebar toggle
+            document.getElementById('sidebar-toggle').addEventListener('click', toggleSidebar);
+        };
+
+        const toggleSidebar = () => {
+            const sidebar = document.getElementById('sidebar');
+            const mainContent = document.getElementById('main-content');
+            sidebar.classList.toggle('hidden');
+            sidebar.classList.toggle('w-1/4');
+            mainContent.classList.toggle('lg:w-3/4');
+            mainContent.classList.toggle('w-full');
+        };
+
+        // Renders either Resource List or Contact List based on 'view'
+        const renderListContent = (view, filterAccountId = null) => {
+            currentView = view;
+            const container = document.getElementById('unified-inbox');
+            const resourceTab = document.getElementById('resource-list-tab');
+            const contactTab = document.getElementById('contact-list-tab');
+            const filterStatus = document.getElementById('account-filter-status');
+
+            // Reset Tab UI
+            const resetClasses = ['border-b-viber-purple', 'text-viber-purple'];
+            const activeClasses = ['border-b-viber-purple', 'text-viber-purple', 'border-b-2'];
+            
+            // Apply neutral classes
+            resourceTab.classList.remove(...activeClasses);
+            contactTab.classList.remove(...activeClasses);
+            resourceTab.classList.add('text-gray-500', 'border-b-2', 'border-b-transparent');
+            contactTab.classList.add('text-gray-500', 'border-b-2', 'border-b-transparent');
+
+
+            if (view === 'resources') {
+                resourceTab.classList.add(...activeClasses);
+                resourceTab.classList.remove('text-gray-500', 'border-b-transparent');
+                renderResourceList();
+                filterStatus.textContent = 'Viewing all managed resources/profiles.';
+                // Clear the message detail panel when viewing resources
+                document.getElementById('message-detail').innerHTML = `
+                    <div class="flex items-center justify-center h-full text-gray-400">
+                        View customer profiles and manually input data here.
+                    </div>
+                `;
+                selectedMessage = null;
+
+            } else { // 'contacts' (Unified Inbox)
+                contactTab.classList.add(...activeClasses);
+                contactTab.classList.remove('text-gray-500', 'border-b-transparent');
+                renderContactList(filterAccountId);
+                const filterText = filterAccountId 
+                    ? `Filtering by: ${MOCK_ACCOUNTS.find(a => a.id === filterAccountId).name}` 
+                    : 'Showing all messages in the Unified Inbox.';
+                filterStatus.textContent = filterText;
+            }
+        };
+
+        // Render the list of connected Viber accounts
+        const renderAccounts = () => {
+            const container = document.getElementById('viber-accounts-list');
+            container.innerHTML = `
+                <li class="px-6 py-2 text-xs font-semibold uppercase text-gray-400">Connected Accounts</li>
+                ${MOCK_ACCOUNTS.map(account => `
+                    <li class="cursor-pointer hover:bg-purple-100/30 transition-colors rounded-lg mx-2" onclick="window.selectAccount('${account.id}')">
+                        <div class="flex justify-between items-center px-4 py-3">
+                            <div>
+                                <p class="text-sm font-medium text-gray-800">${account.name}</p>
+                                <p class="text-xs ${account.status === 'Active' ? 'text-green-500' : 'text-red-500'}">
+                                    ${account.status}
+                                </p>
+                            </div>
+                            ${account.unread > 0 ? `<span class="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">${account.unread}</span>` : ''}
+                        </div>
+                    </li>
+                `).join('')}
+            `;
+        };
+
+        // Render the Contact List (Unified Inbox Messages)
+        const renderContactList = (filterAccountId = null) => {
+            currentContactList = filterAccountId 
+                ? MOCK_CONTACTS.filter(m => m.accountId === filterAccountId)
+                : MOCK_CONTACTS;
+
+            const container = document.getElementById('unified-inbox');
+            container.innerHTML = currentContactList.length > 0 
+                ? currentContactList.map(message => {
+                    const account = MOCK_ACCOUNTS.find(a => a.id === message.accountId);
+                    const isNew = message.status === 'New';
+                    const isSelected = selectedMessage && selectedMessage.id === message.id;
+                    return `
+                        <div 
+                            class="p-4 border-b last:border-b-0 cursor-pointer transition-colors ${isSelected ? 'bg-purple-100/50 border-l-4 border-l-viber-purple' : 'hover:bg-gray-50'}"
+                            onclick="window.selectMessage(${message.id})"
+                        >
+                            <div class="flex items-center space-x-3">
+                                <!-- Profile/Icon -->
+                                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center text-viber-purple font-bold text-sm">
+                                    ${message.sender[0]}
+                                </div>
+                                <div class="flex-1 overflow-hidden">
+                                    <div class="flex justify-between items-center">
+                                        <p class="font-semibold ${isNew ? 'text-gray-900' : 'text-gray-600'}">${message.sender}</p>
+                                        <p class="text-xs text-gray-400 flex-shrink-0">${message.time}</p>
+                                    </div>
+                                    <p class="text-sm text-gray-500 truncate mt-0.5">
+                                        ${message.preview}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('')
+                : '<div class="p-8 text-center text-gray-500">No messages found.</div>';
+            
+            // Update message detail based on selection
+            if (!selectedMessage) {
+                document.getElementById('message-detail').innerHTML = `
+                    <div class="flex items-center justify-center h-full text-gray-400">
+                        Select a contact to view the conversation.
+                    </div>
+                `;
+            } else if (currentContactList.length > 0) {
+                // Ensure selected message is still in the filtered list
+                selectedMessage = currentContactList.find(m => m.id === selectedMessage.id) || null;
+                if(selectedMessage) renderMessageDetail(selectedMessage);
+                else {
+                    document.getElementById('message-detail').innerHTML = `
+                        <div class="flex items-center justify-center h-full text-gray-400">
+                            Select a contact to view the conversation.
+                        </div>
+                    `;
+                }
+            }
+        };
+
+        // Render the Resource List (Customer Profiles)
+        const renderResourceList = () => {
+            const container = document.getElementById('unified-inbox');
+            
+            container.innerHTML = MOCK_RESOURCES.map(resource => `
+                <div class="p-3 border-b last:border-b-0 hover:bg-gray-50 cursor-pointer transition-colors">
+                    <div class="flex items-center space-x-3">
+                        <!-- Checkbox -->
+                        <input type="checkbox" class="form-checkbox text-viber-purple rounded" />
+                        <!-- Profile Image -->
+                        <img src="${resource.profileImage}" alt="${resource.name}" class="w-10 h-10 rounded-full object-cover">
+                        <div class="flex-1 min-w-0">
+                            <p class="font-semibold text-gray-800">${resource.name}</p>
+                            <p class="text-sm text-gray-500">${resource.phone}</p>
+                            <div class="mt-1 flex space-x-2">
+                                <span class="text-xs px-2 py-0.5 rounded-full ${resource.status === 'Online' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}">
+                                    ${resource.status}
+                                </span>
+                                <span class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                                    ${resource.tag}
+                                </span>
+                            </div>
+                        </div>
+                        <!-- Group Count / Indicator -->
+                        <div class="flex items-center text-gray-400 text-sm flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                            ${resource.groupCount}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        };
+
+        // Render the conversation thread and action panel (remains largely the same)
+        const renderMessageDetail = (message) => {
+            selectedMessage = message;
+            // Re-render the contact list to highlight the selected message
+            renderListContent('contacts'); 
+
+            const conversationThread = message.thread.map(msg => `
+                <div class="flex ${msg.type === 'out' ? 'justify-end' : 'justify-start'} mb-4">
+                    <div class="max-w-xs lg:max-w-md">
+                        <div class="p-3 rounded-xl ${msg.type === 'out' ? 'bg-viber-purple text-white rounded-tr-none' : 'bg-white text-gray-800 rounded-tl-none border border-gray-200 shadow-sm'}">
+                            ${msg.text}
+                        </div>
+                        <p class="text-xs text-gray-400 mt-1 ${msg.type === 'out' ? 'text-right' : 'text-left'}">${msg.time}</p>
+                    </div>
+                </div>
+            `).join('');
+
+            document.getElementById('message-detail').innerHTML = `
+                <!-- Message Header -->
+                <div class="p-4 border-b bg-white flex justify-between items-center sticky top-0 z-10">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-900">${message.sender}</h2>
+                        <p class="text-sm text-gray-500">via ${MOCK_ACCOUNTS.find(a => a.id === message.accountId).name}</p>
+                    </div>
+                    <button onclick="window.showDataInputModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white text-sm px-3 py-1.5 rounded-full transition duration-150 shadow-md">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 inline-block mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                        Input Data
+                    </button>
+                </div>
+                
+                <!-- Conversation Thread -->
+                <div id="conversation-thread" class="p-6 h-[calc(100vh-250px)] overflow-y-auto custom-scrollbar bg-gray-50">
+                    ${conversationThread}
+                </div>
+
+                <!-- Response Panel -->
+                <div class="p-4 border-t bg-white sticky bottom-0 z-10">
+                    <div class="flex items-center space-x-3 mb-3">
+                        <label class="flex items-center">
+                            <input type="radio" name="response-mode" value="manual" checked class="form-radio text-viber-purple" onchange="window.toggleResponseMode('manual')">
+                            <span class="ml-2 text-sm text-gray-700 font-medium">Manual Reply</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="radio" name="response-mode" value="auto" class="form-radio text-viber-purple" onchange="window.toggleResponseMode('auto')">
+                            <span class="ml-2 text-sm text-gray-700 font-medium">Automated Rule</span>
+                        </label>
+                    </div>
+                    
+                    <div id="manual-response-area">
+                        <textarea id="reply-input" class="w-full p-3 border rounded-lg focus:ring-viber-purple focus:border-viber-purple resize-none" rows="3" placeholder="Type your manual reply..."></textarea>
+                        <button onclick="window.sendReply()" class="mt-2 w-full bg-viber-purple hover:bg-purple-700 text-white font-semibold py-2 rounded-lg transition duration-150 shadow-lg">
+                            Send Reply
+                        </button>
+                    </div>
+
+                    <div id="auto-response-area" class="hidden p-4 bg-purple-50 border border-purple-200 rounded-lg">
+                        <p class="text-sm font-medium text-purple-800 mb-2">Automated Rule Active:</p>
+                        <p class="text-xs text-purple-700">Rule: If message contains "order #", send canned response "Order Status Check".</p>
+                        <button class="mt-2 text-xs text-viber-purple hover:underline" onclick="window.manageAutoRules()">Manage Rules</button>
+                    </div>
+                </div>
+            `;
+            // Scroll to the bottom of the conversation thread
+            const thread = document.getElementById('conversation-thread');
+            if (thread) {
+                thread.scrollTop = thread.scrollHeight;
+            }
+        };
+
+        // --- Global Functions (exposed to HTML) ---
+
+        window.switchTab = (view) => {
+            renderListContent(view);
+        };
+
+        window.selectAccount = (accountId) => {
+            console.log("Selected account:", accountId);
+            // Always switch to contacts view when filtering by account
+            renderListContent('contacts', accountId);
+        };
+
+        window.selectMessage = (messageId) => {
+            const message = MOCK_CONTACTS.find(m => m.id === messageId);
+            if (message) {
+                renderMessageDetail(message);
+            }
+        };
+
+        window.sendReply = () => {
+            const replyText = document.getElementById('reply-input').value.trim();
+            if (!replyText || !selectedMessage) {
+                window.showMessageBox("Error", "Please select a message and type a reply.", "error");
+                return;
+            }
+            
+            // Mocking the send operation
+            console.log(`Sending reply to ${selectedMessage.sender} (Message ID: ${selectedMessage.id}): ${replyText}`);
+            
+            // Add the new message to the thread (mock update)
+            selectedMessage.thread.push({ 
+                type: 'out', 
+                text: replyText, 
+                time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) 
+            });
+            
+            // Re-render the detail view and clear input
+            renderMessageDetail(selectedMessage);
+            document.getElementById('reply-input').value = '';
+            
+            window.showMessageBox("Success", `Reply sent to ${selectedMessage.sender}! (In a real app, this would update Firestore)`, "success");
+        };
+
+        window.toggleResponseMode = (mode) => {
+            const manualArea = document.getElementById('manual-response-area');
+            const autoArea = document.getElementById('auto-response-area');
+            if (mode === 'manual') {
+                manualArea.classList.remove('hidden');
+                autoArea.classList.add('hidden');
+            } else {
+                manualArea.classList.add('hidden');
+                autoArea.classList.remove('hidden');
+            }
+        };
+
+        window.showDataInputModal = () => {
+            document.getElementById('data-input-modal').classList.remove('hidden');
+            // Pre-populate customer name if a message is selected
+            if (selectedMessage) {
+                document.getElementById('customer-name').value = selectedMessage.sender;
+            } else {
+                 document.getElementById('customer-name').value = '';
+            }
+        };
+
+        window.closeDataInputModal = () => {
+            document.getElementById('data-input-modal').classList.add('hidden');
+        };
+
+        window.submitDataInput = () => {
+            const customerName = document.getElementById('customer-name').value;
+            const customData = document.getElementById('custom-data').value;
+            
+            // Mock data submission (in a real app, this would be a Firestore setDoc or addDoc)
+            console.log("Data Submitted:", { customerName, customData, messageId: selectedMessage?.id });
+
+            // Example of how to structure a Firestore call (not executed here)
+            /*
+            const userDocRef = doc(db, 'artifacts', appId, 'users', userId, 'viber_customer_data', customerName.replace(/\s/g, '_'));
+            await setDoc(userDocRef, {
+                name: customerName,
+                data: customData,
+                linkedMessageId: selectedMessage?.id || null,
+                timestamp: new Date().toISOString()
+            }, { merge: true });
+            */
+
+            window.showMessageBox("Data Stored", `Data for ${customerName} saved successfully to the system!`, "success");
+            window.closeDataInputModal();
+        };
+
+        window.manageAutoRules = () => {
+            window.showMessageBox("Feature Placeholder", "The full Automated Rules management UI would appear here. Rules include: 'If Keyword X is found, respond with Template Y'.", "info");
+        };
+
+        // --- Custom Message Box UI (Instead of alert) ---
+        window.showMessageBox = (title, message, type) => {
+            const box = document.getElementById('message-box');
+            const icon = document.getElementById('message-box-icon');
+            const colorMap = {
+                success: { bg: 'bg-green-500', icon: '<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>' },
+                error: { bg: 'bg-red-500', icon: '<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>' },
+                info: { bg: 'bg-blue-500', icon: '<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>' },
+            };
+            
+            box.querySelector('#box-title').textContent = title;
+            box.querySelector('#box-message').textContent = message;
+            
+            // Reset and apply colors/icon
+            Object.values(colorMap).forEach(c => box.classList.remove(c.bg));
+            box.classList.add(colorMap[type].bg);
+            icon.innerHTML = colorMap[type].icon;
+
+            box.classList.remove('opacity-0', 'pointer-events-none');
+            box.classList.add('opacity-100');
+
+            setTimeout(() => {
+                box.classList.remove('opacity-100');
+                box.classList.add('opacity-0', 'pointer-events-none');
+            }, 3000);
+        };
+
+        // Initialize Firebase on window load
+        window.onload = setupFirebase;
+    </script>
+
+    <!-- Sidebar (Viber Accounts) -->
+    <aside id="sidebar" class="w-1/4 bg-white border-r flex flex-col transition-all duration-300 hidden lg:flex">
+        <!-- Logo/Header -->
+        <div class="p-6 border-b flex items-center space-x-2">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 viber-text-purple" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-2-7a1 1 0 011-1h1a1 1 0 110 2h-1a1 1 0 01-1-1z" clip-rule="evenodd" />
+                <path d="M12 11a1 1 0 00-1-1H9a1 1 0 00-1 1v1a1 1 0 001 1h1a1 1 0 001-1v-1z" />
+            </svg>
+            <h1 class="text-xl font-extrabold text-gray-800">Viber MVP Hub</h1>
+        </div>
+
+        <!-- Accounts List -->
+        <ul id="viber-accounts-list" class="flex-grow p-2 space-y-1 overflow-y-auto custom-scrollbar">
+            <!-- Accounts will be rendered here by JS -->
+            <li class="px-6 py-2 text-sm text-gray-400">Loading accounts...</li>
+        </ul>
+
+        <!-- Footer / User Info -->
+        <div class="p-4 border-t bg-gray-50 text-xs text-gray-600">
+            <p class="font-semibold mb-1">Authenticated User:</p>
+            <p class="truncate" id="user-id-display">Signing in...</p>
+            <p class="text-xxs text-gray-400 mt-1">Status: Ready for Firestore operations.</p>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main id="main-content" class="flex flex-col lg:flex-row w-full lg:w-3/4 transition-all duration-300">
+        
+        <!-- Header for mobile/tablet -->
+        <header class="lg:hidden p-4 border-b bg-white flex items-center justify-between shadow-sm">
+            <h1 class="text-lg font-bold viber-text-purple">Unified Dashboard</h1>
+            <button id="sidebar-toggle" class="p-2 rounded-full hover:bg-gray-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+            </button>
+        </header>
+
+        <!-- Middle Panel: Tabbed Resource List / Contact List (2/5 width) -->
+        <section class="w-full lg:w-2/5 border-r flex flex-col bg-white overflow-hidden">
+            
+            <!-- Tab Header -->
+            <div class="p-0 border-b flex justify-between bg-gray-50 sticky top-0 z-10 text-sm">
+                <div id="resource-list-tab" class="flex-1 text-center py-3 border-r cursor-pointer font-semibold text-gray-500 hover:text-viber-purple border-b-2 border-b-transparent transition-all" onclick="window.switchTab('resources')">
+                    Resource List
+                </div>
+                <div id="contact-list-tab" class="flex-1 text-center py-3 cursor-pointer font-semibold text-viber-purple border-b-2 border-b-viber-purple transition-all" onclick="window.switchTab('contacts')">
+                    Contact List
+                </div>
+            </div>
+            
+            <div class="p-4 border-b">
+                <!-- Search bar and quick actions (mocked for visual fidelity) -->
+                <div class="flex items-center justify-between space-x-2 mb-2">
+                    <input type="text" placeholder="Search contacts..." class="flex-1 p-2 border rounded-lg focus:ring-viber-purple focus:border-viber-purple text-sm">
+                    <button class="bg-green-500 hover:bg-green-600 text-white text-xs px-3 py-2 rounded-lg font-medium shadow-sm">Quick Online</button>
+                    <button class="bg-gray-300 hover:bg-gray-400 text-gray-800 text-xs px-3 py-2 rounded-lg font-medium shadow-sm">More</button>
+                </div>
+                <p id="account-filter-status" class="text-xs text-gray-500">Showing all messages in the Unified Inbox.</p>
+            </div>
+
+            <div id="unified-inbox" class="flex-grow overflow-y-auto custom-scrollbar">
+                <!-- Resource List or Contact List items will be rendered here by JS -->
+                <div class="p-8 text-center text-gray-500">Loading data...</div>
+            </div>
+        </section>
+
+        <!-- Message Detail/Thread (3/5 width) -->
+        <section class="w-full lg:w-3/5 flex flex-col bg-white/70">
+            <div id="message-detail" class="flex-grow flex flex-col">
+                <div class="flex items-center justify-center h-full text-gray-400">
+                    Select a contact to start chatting.
+                </div>
+            </div>
+        </section>
+
+    </main>
+    
+    <!-- Data Input Modal -->
+    <div id="data-input-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-50 hidden" onclick="if(event.target.id === 'data-input-modal') window.closeDataInputModal()">
+        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold viber-text-purple">Manual Data Input</h3>
+                <button onclick="window.closeDataInputModal()" class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+            </div>
+            
+            <p class="text-sm text-gray-600 mb-4">Enter or upload relevant data points related to the selected conversation (e.g., CRM link, order status, custom notes).</p>
+
+            <form onsubmit="event.preventDefault(); window.submitDataInput();">
+                <div class="mb-4">
+                    <label for="customer-name" class="block text-sm font-medium text-gray-700">Customer Name (from Viber)</label>
+                    <input type="text" id="customer-name" value="" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-viber-purple focus:border-viber-purple">
+                </div>
+                <div class="mb-6">
+                    <label for="custom-data" class="block text-sm font-medium text-gray-700">Custom Data / Notes</label>
+                    <textarea id="custom-data" rows="4" required placeholder="Paste data, URLs, or notes here..." class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-viber-purple focus:border-viber-purple resize-none"></textarea>
+                </div>
+                
+                <button type="submit" class="w-full bg-viber-purple hover:bg-purple-700 text-white font-semibold py-2.5 rounded-lg transition duration-150 shadow-md">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                    Save Data to System
+                </button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Custom Message Box (Non-alert) -->
+    <div id="message-box" class="fixed top-5 right-5 z-50 p-4 rounded-lg text-white shadow-xl flex items-center space-x-3 transition-opacity duration-300 opacity-0 pointer-events-none">
+        <div id="message-box-icon" class="flex-shrink-0">
+            <!-- Icon will be inserted by JS -->
+        </div>
+        <div>
+            <p id="box-title" class="font-bold"></p>
+            <p id="box-message" class="text-sm"></p>
+        </div>
+    </div>
+
+</body>
+</html>
